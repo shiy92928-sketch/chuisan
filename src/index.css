@@ -1,0 +1,27 @@
+@import "tailwindcss";
+
+@theme {
+  --font-cursive: "Long Cang", cursive, "Noto Serif SC", serif;
+  --font-serif: "Noto Serif SC", serif;
+}
+
+body {
+  font-family: var(--font-serif);
+}
+
+.notebook-paper {
+  background-size: 100% 30px;
+  background-image: linear-gradient(to bottom, transparent 29px, #e5e7eb 29px, #e5e7eb 30px);
+  /* Shifts the grid to accurately match the original code's y-offset for rows */
+  background-position: 0 10px;
+}
+
+@layer utilities {
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none; /* IE and Edge */
+    scrollbar-width: none; /* Firefox */
+  }
+}
