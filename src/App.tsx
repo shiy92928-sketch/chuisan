@@ -1,25 +1,120 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Settings, X, Edit, Sliders } from 'lucide-react';
+import { FaceLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
 
-const defaultWords = [
-  "思绪理不清,前一件还没有理完,新的就出现了；",
-  "睡不着的觉,睡着了却又很难醒；祝你先于春天，",
-  "翻过此间铮铮山峦；",
-  "",
-  "通往夏天的隧道,是再见的路口；",
-  "风吹拂树叶的那一刻，焦虑都消失了；",
-  "打出来的字总是删删减减；",
-  "",
-  "夏天的燥热；",
-  "让吃西瓜吹空调的我感到一丝凉爽；",
-  "世界这么大，总要和朋友出去看看；",
-  "在暴风雨来临时，呆在家里的自由感，让我放松；",
-  "",
-  "昏暗的路灯下，我牵着爸爸妈妈的手，一起走在回家的路上；"
-];
+const defaultWords = {
+  en: [
+    "When I was little, Grandma often tucked the forest",
+    "into a small basket.",
+    "",
+    "Rain boots stepped through the soft, wet mud.",
+    "Wildflowers, leaves, and little berries",
+    "lay quietly at the bottom of the basket,",
+    "like glowing secrets.",
+    "",
+    "At dusk, we went home.",
+    "Mist gathered on the window.",
+    "Behind me, the fireplace slowly began to glow.",
+    "",
+    "The water in the fish tank swayed gently,",
+    "and the waves on the wall turned pink.",
+    "I opened my diary,",
+    "and the typewriter wrote only one sentence:",
+    "",
+    "Today,",
+    "we gathered many tender things.",
+    "",
+    "They were only hiding in the mist, the firelight, and the old paper,",
+    "waiting for me to come close again,",
+    "and recognize them once more."
+  ]
+};
 
 const pixelCache = new Map<string, HTMLCanvasElement>();
+
+let patternCanvas: HTMLCanvasElement | null = null;
+let paperTexturePattern: CanvasPattern | null = null;
+
+const getPaperPattern = (ctx: CanvasRenderingContext2D) => {
+  if (!patternCanvas) {
+    patternCanvas = document.createElement('canvas');
+    patternCanvas.width = 512;
+    patternCanvas.height = 512;
+    const pCtx = patternCanvas.getContext('2d');
+    if (pCtx) {
+      pCtx.fillStyle = '#fdfaf6';
+      pCtx.fillRect(0, 0, 512, 512);
+
+      // Crumpled folds
+      pCtx.save();
+      for (let i = 0; i < 40; i++) {
+        pCtx.beginPath();
+        const x = Math.random() * 512;
+        const y = Math.random() * 512;
+        const r = Math.random() * 120 + 40;
+        const grad = pCtx.createRadialGradient(x, y, 0, x, y, r);
+        
+        if (Math.random() > 0.5) {
+            grad.addColorStop(0, 'rgba(0,0,0,0.04)');
+            grad.addColorStop(1, 'rgba(0,0,0,0)');
+        } else {
+            grad.addColorStop(0, 'rgba(255,255,255,0.06)');
+            grad.addColorStop(1, 'rgba(255,255,255,0)');
+        }
+        
+        pCtx.fillStyle = grad;
+        pCtx.arc(x, y, r, 0, Math.PI * 2);
+        pCtx.fill();
+
+        if (Math.random() > 0.6) {
+           pCtx.beginPath();
+           pCtx.moveTo(x - r, y - r);
+           pCtx.lineTo(x + r, y + r);
+           pCtx.strokeStyle = 'rgba(0,0,0,0.02)';
+           pCtx.lineWidth = Math.random() * 2 + 1;
+           pCtx.stroke();
+        }
+      }
+      pCtx.restore();
+
+      // Noise
+      const imgData = pCtx.getImageData(0, 0, 512, 512);
+      const data = imgData.data;
+      for (let i = 0; i < data.length; i += 4) {
+        const noise = (Math.random() - 0.5) * 10;
+        data[i] = Math.min(255, Math.max(0, data[i] + noise));
+        data[i+1] = Math.min(255, Math.max(0, data[i+1] + noise));
+        data[i+2] = Math.min(255, Math.max(0, data[i+2] + noise));
+      }
+      pCtx.putImageData(imgData, 0, 0);
+
+      // Faint Ink Stains
+      pCtx.save();
+      pCtx.globalAlpha = 0.05;
+      for (let i = 0; i < 6; i++) {
+        pCtx.beginPath();
+        pCtx.fillStyle = '#2c3e50';
+        const cx = Math.random() * 512;
+        const cy = Math.random() * 512;
+        const cr = Math.random() * 25 + 5;
+        pCtx.arc(cx, cy, cr, 0, Math.PI * 2);
+        pCtx.fill();
+        
+        pCtx.beginPath();
+        pCtx.fillStyle = '#1a252f';
+        pCtx.arc(cx + Math.random()*cr*0.5, cy + Math.random()*cr*0.5, cr * 0.4, 0, Math.PI * 2);
+        pCtx.fill();
+      }
+      pCtx.restore();
+    }
+  }
+  
+  if (!paperTexturePattern && patternCanvas) {
+    paperTexturePattern = ctx.createPattern(patternCanvas, 'repeat');
+  }
+  return paperTexturePattern;
+};
 
 function getPixelText(char: string, hexColor: string): HTMLCanvasElement {
   const baseFontSize = 14;
@@ -97,8 +192,8 @@ class Letter {
     ctx.restore();
   }
 
-  update(currentTime: number, width: number, height: number) {
-    if (currentTime - this.initTime > this.dt) {
+  update(currentTime: number, width: number, height: number, blowTriggerTime: number | null) {
+    if (blowTriggerTime !== null && currentTime - blowTriggerTime > this.dt) {
       this.a -= this.aSpeed; this.x += this.dx; this.y += this.dy;
       if (this.x < 0 || this.x > width) this.dx *= -1;
       if (this.y < 0 || this.y > height) this.dy *= -1;
@@ -106,13 +201,34 @@ class Letter {
   }
 }
 
+const translations = {
+  en: {
+    font_style: "Font Style", handwritten: "Handwritten", pixel: "Pixel",
+    size: "Size", size_s: "S", size_m: "M", size_l: "L", color: "Color", speed: "Speed", spacing: "Spacing",
+    shadow: "Text Shadow", shadow_color: "Color", shadow_blur: "Blur",
+    offset_x: "Offset X", offset_y: "Offset Y", position: "Position Offset", reset: "Reset",
+    content: "Content", add_lines: "Add Notebook Lines", lines_count: "Lines:",
+    reduce: "Reduce", add: "Add", save_scene: "Save Scene", load_scene: "Load Scene", saved: "Saved!",
+    loaded: "Loaded!", no_data: "No Data", export_config: "Export Config",
+    resolution: "Resolution", aspect_ratio: "Aspect Ratio", export_image: "Export Image",
+    save_image: "Save Image", record_video: "Record Video HD", start_record: "Start Recording & Hide",
+    recording: "Recording...", stop_record: "Stop & Save", lang: "Language",
+    bg_image: "Background Image", upload_bg: "Upload Image", remove_bg: "Remove"
+  }
+};
+
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const blowTriggerTimeRef = useRef<number | null>(null);
+  const faceLandmarkerRef = useRef<FaceLandmarker | null>(null);
+  const [isFaceReady, setIsFaceReady] = useState(false);
+  const t = translations.en;
   
   const [size, setSize] = useState<'small' | 'medium' | 'large'>('large');
   const [speed, setSpeed] = useState<number>(100);
   const [textColor, setTextColor] = useState<string>('#ed225e');
-  const [text, setText] = useState<string>(defaultWords.join('\n'));
+  const [text, setText] = useState<string>(defaultWords.en.join('\n'));
   const [isPanelOpen, setIsPanelOpen] = useState(false);
   const [letterSpacing, setLetterSpacing] = useState(1);
   const [fontstyle, setFontstyle] = useState<'handwritten' | 'pixel'>('handwritten');
@@ -185,9 +301,37 @@ export default function App() {
   const [linesToAdd, setLinesToAdd] = useState(5);
   const linesConfig = useRef({ addedLines: 0, lastAddedLines: 0 });
 
+  const [bgImageSrc, setBgImageSrc] = useState<string | null>("https://raw.githubusercontent.com/shiy92928-sketch/picture/main/05f9f9f1fab2a38b38b31fdb2dc11ef5.png");
+  const bgImageRef = useRef<HTMLImageElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
   useEffect(() => {
     isRecordingRef.current = isRecording;
   }, [isRecording]);
+
+  useEffect(() => {
+    if (bgImageSrc) {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => {
+        bgImageRef.current = img;
+      };
+      img.src = bgImageSrc;
+    } else {
+      bgImageRef.current = null;
+    }
+  }, [bgImageSrc]);
+
+  const handleBgImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        setBgImageSrc(event.target?.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
 
   const getExportDimensions = (ratio: string, res: string) => {
     const base = res === '1080p' ? 1080 : 720;
@@ -270,6 +414,52 @@ export default function App() {
     realTimeOpts.current = { offsetX, offsetY, shadowColor, shadowBlur, shadowOffsetX, shadowOffsetY, isShadowEnabled };
   }, [offsetX, offsetY, shadowColor, shadowBlur, shadowOffsetX, shadowOffsetY, isShadowEnabled]);
 
+  useEffect(() => {
+    let active = true;
+    const initTask = async () => {
+      const filesetResolver = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+      );
+      const faceLandmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
+        baseOptions: {
+          modelAssetPath: `https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task`,
+          delegate: "GPU"
+        },
+        outputFaceBlendshapes: true,
+        runningMode: "VIDEO",
+        numFaces: 1
+      });
+      if (active) {
+        faceLandmarkerRef.current = faceLandmarker;
+        setIsFaceReady(true);
+      }
+    };
+    initTask();
+    
+    // Video Setup
+    let streamRef: MediaStream | null = null;
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      navigator.mediaDevices.getUserMedia({ video: true }).then((stream) => {
+        if (active) {
+          streamRef = stream;
+          if (videoRef.current) videoRef.current.srcObject = stream;
+        } else {
+          stream.getTracks().forEach(track => track.stop());
+        }
+      });
+    }
+    
+    return () => {
+      active = false;
+      if (faceLandmarkerRef.current) {
+        faceLandmarkerRef.current.close();
+      }
+      if (streamRef) {
+        streamRef.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, []);
+
   const [debouncedText, setDebouncedText] = useState(text);
   useEffect(() => {
     const handler = setTimeout(() => { setDebouncedText(text); }, 600);
@@ -302,14 +492,50 @@ export default function App() {
         dim = getExportDimensions(aspectRatio, exportRes);
       }
 
+      if (bgImageRef.current && bgImageRef.current.complete) {
+        let estLogicalWidth = aspectRatio === 'auto' ? window.innerWidth : dim.w;
+        let estLogicalHeight = aspectRatio === 'auto' ? Math.max(window.innerHeight, 1000) : dim.h;
+        
+        const img = bgImageRef.current;
+        const imgRatio = img.width / img.height;
+        const canvasRatio = estLogicalWidth / estLogicalHeight;
+        let drawWidth = estLogicalWidth;
+        let drawX = 0;
+        
+        if (imgRatio > canvasRatio) {
+           drawWidth = img.width * (estLogicalHeight / img.height);
+           drawX = (estLogicalWidth - drawWidth) / 2;
+        }
+        
+        const imageLineX = drawX + (124 / 1214) * drawWidth + 15;
+        originX = imageLineX - redLineOffsetX;
+      }
+
       const availableWidth = dim.w - originX - (isMobile ? 16 : 40);
-      const maxWordLength = Math.max(1, ...wordsArray.map(w => w.length));
 
       const baseSpaceInGrid = size === 'small' ? 30 : size === 'medium' ? 45 : 60;
       const baseFontSize = size === 'small' ? 18 : size === 'medium' ? 24 : 32;
 
+      const tctx = document.createElement('canvas').getContext('2d')!;
+      tctx.font = `${baseFontSize}px ${fontstyle === 'pixel' ? '"JetBrains Mono", monospace' : '"Long Cang", cursive'}`;
+
       let scale = 1;
-      const maxNeededWidth = maxWordLength * (baseSpaceInGrid / 2.0 + letterSpacing);
+      let maxNeededWidth = 0;
+      
+      wordsArray.forEach(line => {
+        let lineWidth = 0;
+        for (let i = 0; i < line.length; i++) {
+          const char = line.charAt(i);
+          const isSpace = char === ' ';
+          if (isSpace) {
+            lineWidth += baseFontSize * 0.4 + letterSpacing * 3;
+          } else {
+            lineWidth += tctx.measureText(char).width + letterSpacing * 0.5;
+          }
+        }
+        if (lineWidth > maxNeededWidth) maxNeededWidth = lineWidth;
+      });
+      
       if (maxNeededWidth > availableWidth && availableWidth > 0) scale = availableWidth / maxNeededWidth;
 
       spaceInGrid = baseSpaceInGrid * scale;
@@ -349,19 +575,34 @@ export default function App() {
     const initLetters = (time: number) => {
       letters = [];
       let y = 0;
+      
+      const tctx = canvas.getContext('2d')!;
+      tctx.font = `${fontSize}px ${fontstyle === 'pixel' ? '"JetBrains Mono", monospace' : '"Long Cang", cursive'}`;
+      
       for (let i = 0; i < wordsArray.length; i++) {
         let x = 0;
-        let dt = 2000 + i * 500;
+        let dt = i * 150;
         for (let j = 0; j < wordsArray[i].length; j++) {
+          const char = wordsArray[i].charAt(j);
+          const isSpace = char === ' ';
           dt += speed; 
-          letters.push(new Letter(wordsArray[i].charAt(j), x + originX, y + originY - spaceInGrid / 6, dt, time, textColor, textScale, fontstyle, fontSize));
-          x += (spaceInGrid / 2.0) + letterSpacing; 
+          letters.push(new Letter(char, x + originX, y + originY - spaceInGrid / 6, dt, time, textColor, textScale, fontstyle, fontSize));
+          
+          if (isSpace) {
+            x += fontSize * 0.4 + letterSpacing * 3;
+          } else {
+            x += tctx.measureText(char).width + letterSpacing * 0.5;
+          }
         }
         y += spaceInGrid;
       }
     };
 
     let prevWidth = window.innerWidth;
+    let lastVideoTime = -1;
+    let lastProcessedTimeMs = -1;
+    let blowFrames = 0;
+
     const handleResize = () => {
       if (isRecordingRef.current) return;
       if (Math.abs(window.innerWidth - prevWidth) > 10) {
@@ -378,11 +619,50 @@ export default function App() {
     window.addEventListener('resize', handleResize);
 
     const drawBg = () => {
-      ctx.fillStyle = '#fdfaf6';
-      ctx.fillRect(0, 0, logicalWidth, logicalHeight);
+      if (bgImageRef.current && bgImageRef.current.complete) {
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, logicalWidth, logicalHeight);
+        
+        const img = bgImageRef.current;
+        const imgRatio = img.width / img.height;
+        const canvasRatio = logicalWidth / logicalHeight;
+        let drawWidth = logicalWidth;
+        let drawHeight = logicalHeight;
+        let drawX = 0;
+        let drawY = 0;
+        
+        if (imgRatio > canvasRatio) {
+           drawHeight = logicalHeight;
+           drawWidth = img.width * (logicalHeight / img.height);
+           drawX = (logicalWidth - drawWidth) / 2;
+        } else {
+           drawWidth = logicalWidth;
+           drawHeight = img.height * (logicalWidth / img.width);
+           drawY = 0;
+        }
+        ctx.drawImage(img, drawX, drawY, drawWidth, drawHeight);
+      } else {
+        ctx.fillStyle = getPaperPattern(ctx) || '#fdfaf6';
+        ctx.fillRect(0, 0, logicalWidth, logicalHeight);
+        
+        // Paper border effect from reference
+        ctx.save();
+        ctx.strokeStyle = 'rgba(50, 50, 50, 0.15)';
+        ctx.lineWidth = 1.6;
+        ctx.translate(logicalWidth / 2, logicalHeight / 2);
+        ctx.beginPath();
+        ctx.roundRect(-logicalWidth * 0.49, -logicalHeight * 0.49, logicalWidth * 0.98, logicalHeight * 0.98, [15, 5, 20, 25]);
+        ctx.stroke();
+        ctx.rotate(0.01);
+        ctx.beginPath();
+        ctx.roundRect(-logicalWidth * 0.49, -logicalHeight * 0.49, logicalWidth * 0.98, logicalHeight * 0.98, [15, 5, 20, 25]);
+        ctx.stroke();
+        ctx.restore();
+      }
+
       ctx.save();
       ctx.translate(originX, originY);
-      ctx.strokeStyle = '#e2e2e2'; ctx.lineWidth = 1;
+      ctx.strokeStyle = '#fca5a5'; ctx.lineWidth = 1;
 
       const numLines = wordsArray.length + 8 + linesConfig.current.addedLines;
       for (let i = 0; i < numLines; i++) {
@@ -401,6 +681,38 @@ export default function App() {
         linesConfig.current.lastAddedLines = linesConfig.current.addedLines;
         calculateSizes();
       }
+      
+      if (faceLandmarkerRef.current && videoRef.current && videoRef.current.readyState >= 2) {
+        if (videoRef.current.currentTime !== lastVideoTime) {
+          lastVideoTime = videoRef.current.currentTime;
+          let nowMs = performance.now();
+          if (nowMs <= lastProcessedTimeMs) nowMs = lastProcessedTimeMs + 1;
+          lastProcessedTimeMs = nowMs;
+          
+          try {
+            const result = faceLandmarkerRef.current.detectForVideo(videoRef.current, nowMs);
+            if (result.faceBlendshapes && result.faceBlendshapes.length > 0) {
+              const pucker = result.faceBlendshapes[0].categories.find(c => c.categoryName === "mouthPucker");
+              const funnel = result.faceBlendshapes[0].categories.find(c => c.categoryName === "mouthFunnel");
+              const puckerScore = pucker ? pucker.score : 0;
+              const funnelScore = funnel ? funnel.score : 0;
+              
+              if ((puckerScore > 0.4 || funnelScore > 0.4) && blowTriggerTimeRef.current === null) {
+                blowFrames++;
+                if (blowFrames > 5) {
+                  blowTriggerTimeRef.current = time;
+                }
+              } else {
+                blowFrames = 0;
+              }
+            } else {
+              blowFrames = 0;
+            }
+          } catch (e) {
+            console.error("MediaPipe inference error", e);
+          }
+        }
+      }
 
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -418,12 +730,13 @@ export default function App() {
           offsetX, 
           offsetY
         );
-        letters[i].update(time, logicalWidth, logicalHeight);
+        letters[i].update(time, logicalWidth, logicalHeight, blowTriggerTimeRef.current);
         if (letters[i].a <= 0) letters.splice(i, 1);
       }
       if (letters.length === 0) {
         if (restartTimer === 0) restartTimer = time;
         else if (time - restartTimer > 2000) {
+          blowTriggerTimeRef.current = null;
           initLetters(time); restartTimer = 0;
         }
       }
@@ -444,19 +757,25 @@ export default function App() {
         >
           <div className="flex items-center space-x-2">
             <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse"></span>
-            <span className="text-sm font-semibold tracking-wider">录制中...</span>
+            <span className="text-sm font-semibold tracking-wider">{t.recording}</span>
           </div>
           <div className="w-px h-4 bg-white/20 mx-1"></div>
           <button onClick={stopRecording} className="text-sm font-medium hover:text-red-400 transition-colors">
-            结束并保存
+            {t.stop_record}
           </button>
         </motion.div>
+      )}
+
+      {!isRecording && (
+        <div className="fixed top-8 right-8 z-[40] text-gray-500/80 font-['Long_Cang',cursive] text-2xl drop-shadow-sm pointer-events-none text-right leading-relaxed" style={{ textShadow: '1px 1px 2px rgba(255,255,255,0.8)' }}>
+          Blow the screen<br/>let the memories drift away...
+        </div>
       )}
 
       <motion.div
         drag dragMomentum={false}
         initial={{ x: 0, y: 0 }}
-        className="absolute top-4 right-4 z-50 flex flex-col items-end font-sans pointer-events-auto"
+        className="absolute top-28 right-4 z-50 flex flex-col items-end font-sans pointer-events-auto"
       >
         <motion.div 
           className="flex justify-end mb-2 cursor-grab active:cursor-grabbing"
@@ -485,31 +804,19 @@ export default function App() {
             >
               <div className="p-4 space-y-4 overflow-y-auto no-scrollbar pointer-events-auto" onPointerDown={(e) => e.stopPropagation()}>
                 
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase block">字体风格 (Font Style)</label>
-                  <select 
-                    value={fontstyle} 
-                    onChange={(e) => setFontstyle(e.target.value as 'handwritten' | 'pixel')}
-                    className="w-full bg-gray-50 border border-gray-200 rounded text-[12px] p-1.5 outline-none focus:ring-1"
-                  >
-                    <option value="handwritten">手写体 (Handwritten)</option>
-                    <option value="pixel">像素风 (Pixel)</option>
-                  </select>
-                </div>
-
                 <div className="flex space-x-2">
                   <div className="space-y-1.5 flex-1">
-                    <label className="text-[10px] font-bold text-gray-400 uppercase block">比例</label>
+                    <label className="text-[10px] font-bold text-gray-400 uppercase block">{t.size}</label>
                     <div className="flex border rounded bg-gray-50 overflow-hidden">
                       {(['small', 'medium', 'large'] as const).map(s => (
                         <button key={s} onClick={() => setSize(s)} className={`flex-1 py-1 text-[11px] ${size === s ? 'bg-white shadow-sm text-black border-gray-200 m-0.5 rounded-sm' : 'text-gray-500 hover:bg-gray-100'}`}>
-                          {s === 'small' ? 'S' : s === 'medium' ? 'M' : 'L'}
+                          {s === 'small' ? t.size_s : s === 'medium' ? t.size_m : t.size_l}
                         </button>
                       ))}
                     </div>
                   </div>
                   <div className="space-y-1.5 flex-1">
-                    <label className="text-[10px] font-bold text-gray-400 uppercase block">颜色</label>
+                    <label className="text-[10px] font-bold text-gray-400 uppercase block">{t.color}</label>
                     <div className="flex items-center space-x-2 bg-gray-50 border border-gray-200 p-1 rounded h-[30px]">
                       <input type="color" value={textColor} onChange={(e) => setTextColor(e.target.value)} className="w-5 h-5 rounded border-0 p-0 cursor-pointer" />
                       <span className="text-[11px] font-mono text-gray-600 uppercase flex-1 text-center truncate">{textColor}</span>
@@ -519,21 +826,21 @@ export default function App() {
 
                 <div className="space-y-1.5">
                   <label className="text-[10px] font-bold text-gray-400 uppercase flex justify-between">
-                    <span>速度 (Speed)</span><span className="text-gray-500">{speed}ms</span>
+                    <span>{t.speed}</span><span className="text-gray-500">{speed}ms</span>
                   </label>
                   <input type="range" min="10" max="400" step="10" value={speed} onChange={(e) => setSpeed(Number(e.target.value))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer" />
                 </div>
 
                 <div className="space-y-1.5">
                   <label className="text-[10px] font-bold text-gray-400 uppercase flex justify-between">
-                    <span>间距 (Spacing)</span><span className="text-gray-500">{letterSpacing}px</span>
+                    <span>{t.spacing}</span><span className="text-gray-500">{letterSpacing}px</span>
                   </label>
                   <input type="range" min="0" max="10" step="1" value={letterSpacing} onChange={(e) => setLetterSpacing(Number(e.target.value))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer" />
                 </div>
                 
                 <div className="space-y-2 pt-2 border-t border-gray-100">
                   <div className="flex items-center justify-between">
-                    <label className="text-[10px] font-bold text-gray-400 uppercase">文字阴影 (Shadow)</label>
+                    <label className="text-[10px] font-bold text-gray-400 uppercase">{t.shadow}</label>
                     <button
                       onClick={() => setIsShadowEnabled(!isShadowEnabled)}
                       className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors focus:outline-none ${isShadowEnabled ? 'bg-blue-400' : 'bg-gray-200'}`}
@@ -546,14 +853,14 @@ export default function App() {
                     <>
                       <div className="flex space-x-2">
                         <div className="space-y-1.5 flex-[0.5]">
-                           <label className="text-[9px] text-gray-400 block">颜色</label>
+                           <label className="text-[9px] text-gray-400 block">{t.shadow_color}</label>
                            <div className="flex items-center space-x-1 bg-gray-50 border border-gray-200 p-0.5 rounded h-[22px]">
                              <input type="color" value={shadowColor} onChange={(e) => setShadowColor(e.target.value)} className="w-5 h-5 rounded border-0 p-0 cursor-pointer" />
                            </div>
                         </div>
                         <div className="space-y-1.5 flex-1">
                            <label className="text-[9px] text-gray-400 flex justify-between">
-                             <span>模糊度</span><span>{shadowBlur}</span>
+                             <span>{t.shadow_blur}</span><span>{shadowBlur}</span>
                            </label>
                            <input type="range" min="0" max="30" step="1" value={shadowBlur} onChange={(e) => setShadowBlur(Number(e.target.value))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer" />
                         </div>
@@ -561,13 +868,13 @@ export default function App() {
                       <div className="flex space-x-2">
                         <div className="space-y-1.5 flex-1">
                            <label className="text-[9px] text-gray-400 flex justify-between">
-                             <span>偏移 X</span><span>{shadowOffsetX}</span>
+                             <span>{t.offset_x}</span><span>{shadowOffsetX}</span>
                            </label>
                            <input type="range" min="-30" max="30" step="1" value={shadowOffsetX} onChange={(e) => setShadowOffsetX(Number(e.target.value))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer" />
                         </div>
                         <div className="space-y-1.5 flex-1">
                            <label className="text-[9px] text-gray-400 flex justify-between">
-                             <span>偏移 Y</span><span>{shadowOffsetY}</span>
+                             <span>{t.offset_y}</span><span>{shadowOffsetY}</span>
                            </label>
                            <input type="range" min="-30" max="30" step="1" value={shadowOffsetY} onChange={(e) => setShadowOffsetY(Number(e.target.value))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer" />
                         </div>
@@ -578,8 +885,8 @@ export default function App() {
 
                 <div className="space-y-1.5 pt-2 border-t border-gray-100">
                   <label className="text-[10px] font-bold text-gray-400 uppercase flex items-center justify-between">
-                    <span>位置偏移 (Position)</span>
-                    <button onClick={() => { setOffsetX(0); setOffsetY(0); }} className="px-1.5 py-0.5 border border-gray-200 rounded text-[9px] hover:bg-gray-100 text-gray-500">重置</button>
+                    <span>{t.position}</span>
+                    <button onClick={() => { setOffsetX(0); setOffsetY(0); }} className="px-1.5 py-0.5 border border-gray-200 rounded text-[9px] hover:bg-gray-100 text-gray-500">{t.reset}</button>
                   </label>
                   <div className="flex space-x-3 mt-1 cursor-auto">
                     <div className="space-y-1 flex-1">
@@ -601,16 +908,16 @@ export default function App() {
 
                 <div className="space-y-1.5 pt-2 border-t border-gray-100">
                   <label className="text-[10px] font-bold text-gray-400 uppercase flex items-center justify-between">
-                    <span>正文 (Content)</span><Edit className="w-3 h-3 opacity-60"/>
+                    <span>{t.content}</span><Edit className="w-3 h-3 opacity-60"/>
                   </label>
                   <textarea value={text} onChange={(e) => setText(e.target.value)} className="w-full h-24 py-1.5 px-2 border border-gray-200 rounded text-gray-700 bg-gray-50 focus:bg-white focus:ring-1 outline-none font-sans text-[12px] resize-none" />
                 </div>
                 
                 <div className="space-y-2 pt-2 border-t border-gray-100">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase">添加笔记本行 (Add Lines)</label>
+                  <label className="text-[10px] font-bold text-gray-400 uppercase">{t.add_lines}</label>
                   <div className="flex items-center space-x-2">
                     <div className="flex items-center space-x-1 border border-gray-200 bg-gray-50 rounded p-1 flex-1">
-                      <span className="text-[9px] text-gray-500 pl-1">行数:</span>
+                      <span className="text-[9px] text-gray-500 pl-1">{t.lines_count}</span>
                       <input 
                         type="number" 
                         value={linesToAdd} 
@@ -623,13 +930,13 @@ export default function App() {
                         onClick={() => { linesConfig.current.addedLines = Math.max(0, linesConfig.current.addedLines - linesToAdd); }} 
                         className="px-2 py-1.5 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded text-[10px] font-medium transition-colors"
                       >
-                        减少
+                        {t.reduce}
                       </button>
                       <button 
                         onClick={() => { linesConfig.current.addedLines += linesToAdd; }} 
                         className="px-2 py-1.5 bg-gray-800 hover:bg-gray-700 text-white rounded text-[10px] font-medium transition-colors"
                       >
-                        添加
+                        {t.add}
                       </button>
                     </div>
                   </div>
@@ -637,18 +944,33 @@ export default function App() {
 
                 <div className="flex space-x-2 pt-2 border-t border-gray-100">
                   <button onClick={saveScene} className="flex-1 py-1.5 border border-gray-200 rounded text-[10px] font-medium hover:bg-gray-50 text-gray-600 transition-colors flex justify-center items-center">
-                    {saveStatus === 'saved' ? <span className="text-green-600">已保存!</span> : '保存场景'}
+                    {saveStatus === 'saved' ? <span className="text-green-600">{t.saved}</span> : t.save_scene}
                   </button>
                   <button onClick={loadScene} className="flex-1 py-1.5 border border-gray-200 rounded text-[10px] font-medium hover:bg-gray-50 text-gray-600 transition-colors flex justify-center items-center">
-                    {saveStatus === 'loaded' ? <span className="text-green-600">已加载!</span> : saveStatus === 'no_data' ? <span className="text-orange-500">无存档</span> : '加载场景'}
+                    {saveStatus === 'loaded' ? <span className="text-green-600">{t.loaded}</span> : saveStatus === 'no_data' ? <span className="text-orange-500">{t.no_data}</span> : t.load_scene}
                   </button>
                 </div>
 
                 <div className="space-y-2 pt-2 border-t border-gray-100">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase">画面与导出配置 (Export Config)</label>
+                  <label className="text-[10px] font-bold text-gray-400 uppercase">{t.bg_image}</label>
+                  <div className="flex space-x-2">
+                    <button onClick={() => fileInputRef.current?.click()} className="flex-1 py-1.5 bg-gray-800 hover:bg-gray-700 text-white text-[9px] font-medium rounded shadow-sm transition-colors cursor-pointer">
+                      {t.upload_bg}
+                    </button>
+                    {bgImageSrc && (
+                      <button onClick={() => { setBgImageSrc(null); if (fileInputRef.current) fileInputRef.current.value = ''; }} className="flex-1 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 text-[9px] font-medium rounded transition-colors">
+                        {t.remove_bg}
+                      </button>
+                    )}
+                    <input type="file" accept="image/*" ref={fileInputRef} onChange={handleBgImageUpload} className="hidden" />
+                  </div>
+                </div>
+
+                <div className="space-y-2 pt-2 border-t border-gray-100">
+                  <label className="text-[10px] font-bold text-gray-400 uppercase">{t.export_config}</label>
                   
                   <div className="flex items-center space-x-2">
-                    <span className="text-[9px] text-gray-500 w-8">分辨率</span>
+                    <span className="text-[9px] text-gray-500 w-8">{t.resolution}</span>
                     <div className="flex border border-gray-200 rounded bg-gray-50 flex-1 overflow-hidden">
                       {(['720p', '1080p'] as const).map(r => (
                         <button key={r} onClick={() => setExportRes(r)} className={`flex-1 py-1 text-[9px] font-medium ${exportRes === r ? 'bg-white shadow-sm text-black' : 'text-gray-500 hover:bg-gray-100'}`}>
@@ -659,7 +981,7 @@ export default function App() {
                   </div>
 
                   <div className="flex flex-col space-y-1.5 pt-1">
-                    <span className="text-[9px] text-gray-500">画幅比例 (Aspect Ratio)</span>
+                    <span className="text-[9px] text-gray-500">{t.aspect_ratio}</span>
                     <div className="grid grid-cols-4 gap-1">
                       {['auto', '16:9', '9:16', '4:3', '3:4', '1:1', 'A4', 'A3'].map(r => (
                         <button key={r} onClick={() => setAspectRatio(r)} className={`py-1 text-[9px] font-medium rounded border ${aspectRatio === r ? 'bg-gray-800 text-white border-gray-800' : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'}`}>
@@ -670,7 +992,7 @@ export default function App() {
                   </div>
 
                   <div className="flex flex-col space-y-1.5 pt-1">
-                    <span className="text-[9px] text-gray-500">导出图片 (Export Image)</span>
+                    <span className="text-[9px] text-gray-500">{t.export_image}</span>
                     <div className="flex items-center space-x-2">
                       <div className="flex border border-gray-200 rounded bg-gray-50 flex-1 overflow-hidden">
                         {(['png', 'jpeg'] as const).map(f => (
@@ -680,7 +1002,7 @@ export default function App() {
                         ))}
                       </div>
                       <button onClick={exportImage} className="flex-1 py-1.5 bg-green-500 hover:bg-green-600 text-white text-[10px] rounded font-medium transition-colors">
-                        保存图片
+                        {t.save_image}
                       </button>
                     </div>
                   </div>
@@ -688,11 +1010,11 @@ export default function App() {
 
                 <div className="space-y-1.5 pt-2 border-t border-gray-100">
                   <div className="flex items-center justify-between">
-                     <label className="text-[10px] font-bold text-gray-400 uppercase">录制视频 (Record HD)</label>
+                     <label className="text-[10px] font-bold text-gray-400 uppercase">{t.record_video}</label>
                   </div>
                   <button onClick={startRecording} className="w-full py-2 bg-blue-500 hover:bg-blue-600 active:bg-blue-700 text-white rounded-lg text-[11px] font-medium flex items-center justify-center space-x-2 transition-colors">
                     <span className="w-1.5 h-1.5 rounded-full bg-red-200 animate-pulse"></span>
-                    <span>开始录制并隐藏面板</span>
+                    <span>{t.start_record}</span>
                   </button>
                 </div>
               </div>
@@ -701,6 +1023,28 @@ export default function App() {
         </AnimatePresence>
       </motion.div>
       <canvas ref={canvasRef} className="block" />
+      <div className="fixed bottom-4 right-4 z-50 rounded overflow-hidden shadow-sm pointer-events-none opacity-50 outline outline-1 outline-gray-200">
+        <video 
+          ref={videoRef} 
+          autoPlay 
+          playsInline 
+          muted 
+          className="w-24 h-auto scale-x-[-1]" 
+        />
+        <div className="absolute inset-x-0 bottom-0 bg-black/30 backdrop-blur-[2px] p-1 text-[8px] text-white text-center flex items-center justify-center space-x-1">
+           {isFaceReady ? (
+             <>
+               <span className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse"></span>
+               <span>Face Tracking On</span>
+             </>
+           ) : (
+             <>
+               <span className="w-1.5 h-1.5 bg-yellow-400 rounded-full animate-pulse"></span>
+               <span>Camera</span>
+             </>
+           )}
+        </div>
+      </div>
     </div>
   );
 }
