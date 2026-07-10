@@ -155,15 +155,16 @@ function getPixelText(char: string, hexColor: string): HTMLCanvasElement {
 }
 
 class Letter {
-  letter: string; x: number; y: number; dt: number; a: number = 255;
+  letter: string; startX: number; startY: number; x: number; y: number; dt: number; a: number = 255;
   aSpeed: number; initTime: number; dx: number; dy: number;
   image: HTMLCanvasElement; scale: number; fontStyle: string;
   hexColor: string; fontSize: number;
 
   constructor(letter: string, x: number, y: number, dt: number, initTime: number, hexColor: string, sizeScale: number, fontStyle: string, fontSize: number) {
-    this.letter = letter; this.x = x; this.y = y; this.dt = dt;
+    this.letter = letter; this.startX = x; this.startY = y; this.x = x; this.y = y; this.dt = dt;
     this.aSpeed = 1 + Math.random() * 2; this.initTime = initTime;
-    this.dx = 6; this.dy = -2 + Math.random() * 4;
+    this.dx = (Math.random() > 0.5 ? 1 : -1) * (2 + Math.random() * 4);
+    this.dy = -2 + Math.random() * 4;
     this.scale = sizeScale; this.fontStyle = fontStyle;
     this.hexColor = hexColor; this.fontSize = fontSize;
     this.image = getPixelText(letter, hexColor);
@@ -192,11 +193,28 @@ class Letter {
     ctx.restore();
   }
 
-  update(currentTime: number, width: number, height: number, blowTriggerTime: number | null) {
-    if (blowTriggerTime !== null && currentTime - blowTriggerTime > this.dt) {
-      this.a -= this.aSpeed; this.x += this.dx; this.y += this.dy;
+  update(currentTime: number, width: number, height: number, blowTriggerTime: number | null, appState: string) {
+    if (appState === 'BLOWING' && blowTriggerTime !== null && currentTime - blowTriggerTime > this.dt) {
+      this.a = Math.max(0, this.a - this.aSpeed);
+      this.x += this.dx;
+      this.y += this.dy;
       if (this.x < 0 || this.x > width) this.dx *= -1;
       if (this.y < 0 || this.y > height) this.dy *= -1;
+    } else if (appState === 'RETURNING') {
+      this.x += (this.startX - this.x) * 0.02;
+      this.y += (this.startY - this.y) * 0.02;
+      this.a = Math.min(255, this.a + 2);
+      if (this.a >= 255 && Math.abs(this.x - this.startX) < 1 && Math.abs(this.y - this.startY) < 1) {
+         this.x = this.startX;
+         this.y = this.startY;
+         this.a = 255;
+         this.dx = (Math.random() > 0.5 ? 1 : -1) * (2 + Math.random() * 4); 
+         this.dy = -2 + Math.random() * 4;
+      }
+    } else if (appState === 'WAITING') {
+      this.x = this.startX;
+      this.y = this.startY;
+      this.a = 255;
     }
   }
 }
@@ -218,6 +236,12 @@ const translations = {
 };
 
 export default function App() {
+  const [isExperienceStarted, setIsExperienceStarted] = useState(false);
+  const isExperienceStartedRef = useRef(false);
+  useEffect(() => {
+    isExperienceStartedRef.current = isExperienceStarted;
+  }, [isExperienceStarted]);
+
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const blowTriggerTimeRef = useRef<number | null>(null);
@@ -602,6 +626,10 @@ export default function App() {
     let lastVideoTime = -1;
     let lastProcessedTimeMs = -1;
     let blowFrames = 0;
+    let appState: 'WAITING' | 'BLOWING' | 'RETURNING' = 'WAITING';
+    let blowTriggerTime: number | null = null;
+    let allDisappearedTime = 0;
+    let cooldownUntil = 0;
 
     const handleResize = () => {
       if (isRecordingRef.current) return;
@@ -697,10 +725,16 @@ export default function App() {
               const puckerScore = pucker ? pucker.score : 0;
               const funnelScore = funnel ? funnel.score : 0;
               
-              if ((puckerScore > 0.4 || funnelScore > 0.4) && blowTriggerTimeRef.current === null) {
-                blowFrames++;
-                if (blowFrames > 5) {
-                  blowTriggerTimeRef.current = time;
+              if (isExperienceStartedRef.current && appState === 'WAITING' && time > cooldownUntil) {
+                if (puckerScore > 0.45 || funnelScore > 0.45) {
+                  blowFrames++;
+                  if (blowFrames > 10) {
+                    appState = 'BLOWING';
+                    blowTriggerTime = time;
+                    blowFrames = 0;
+                  }
+                } else {
+                  blowFrames = 0;
                 }
               } else {
                 blowFrames = 0;
@@ -720,7 +754,11 @@ export default function App() {
 
       drawBg();
       const { shadowColor, shadowBlur, shadowOffsetX, shadowOffsetY, offsetX, offsetY, isShadowEnabled } = realTimeOpts.current;
-      for (let i = letters.length - 1; i >= 0; i--) {
+      
+      let allDisappeared = true;
+      let allReturned = true;
+
+      for (let i = 0; i < letters.length; i++) {
         letters[i].display(
           ctx, 
           isShadowEnabled ? shadowColor : 'transparent', 
@@ -730,16 +768,27 @@ export default function App() {
           offsetX, 
           offsetY
         );
-        letters[i].update(time, logicalWidth, logicalHeight, blowTriggerTimeRef.current);
-        if (letters[i].a <= 0) letters.splice(i, 1);
-      }
-      if (letters.length === 0) {
-        if (restartTimer === 0) restartTimer = time;
-        else if (time - restartTimer > 2000) {
-          blowTriggerTimeRef.current = null;
-          initLetters(time); restartTimer = 0;
+        letters[i].update(time, logicalWidth, logicalHeight, blowTriggerTime, appState);
+        if (letters[i].a > 0) allDisappeared = false;
+        if (letters[i].a < 255 || Math.abs(letters[i].x - letters[i].startX) > 1 || Math.abs(letters[i].y - letters[i].startY) > 1) {
+          allReturned = false;
         }
       }
+
+      if (appState === 'BLOWING' && allDisappeared) {
+        if (allDisappearedTime === 0) allDisappearedTime = time;
+        else if (time - allDisappearedTime > 2000) {
+          appState = 'RETURNING';
+          allDisappearedTime = 0;
+        }
+      }
+
+      if (appState === 'RETURNING' && allReturned) {
+        appState = 'WAITING';
+        blowTriggerTime = null;
+        cooldownUntil = time + 1500;
+      }
+
       animationFrameId = requestAnimationFrame(render);
     };
 
@@ -749,6 +798,36 @@ export default function App() {
 
   return (
     <div className={`w-screen h-screen bg-[#fdfaf6] overflow-x-hidden overflow-y-auto no-scrollbar absolute inset-0 ${aspectRatio !== 'auto' ? 'flex items-center justify-center bg-gray-900' : ''}`}>
+      {!isExperienceStarted && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-white/40 backdrop-blur-md">
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="bg-white/50 backdrop-blur-xl border border-white/60 shadow-[0_8px_32px_rgba(0,0,0,0.05)] rounded-2xl p-10 max-w-md w-full text-center"
+          >
+            <h1 className="text-3xl font-['Long_Cang',cursive] text-gray-800 mb-8">Memory Letter</h1>
+            
+            <div className="space-y-6 text-gray-700 text-sm mb-10 font-sans">
+              <div>
+                <div className="text-lg font-medium mb-1">🌬 Blow gently toward the screen</div>
+                <div className="text-gray-500">Let the memories drift away.</div>
+              </div>
+              <div>
+                <div className="text-lg font-medium mb-1">📝 Watch the words disappear slowly,</div>
+                <div className="text-gray-500">like a letter carried by the wind.</div>
+              </div>
+            </div>
+            
+            <button 
+              onClick={() => setIsExperienceStarted(true)}
+              className="px-8 py-3 bg-gray-900 text-white rounded-full text-sm font-medium tracking-wide hover:bg-gray-800 transition-colors shadow-lg flex flex-col items-center justify-center mx-auto"
+            >
+              <span>Start Experience</span>
+            </button>
+          </motion.div>
+        </div>
+      )}
+
       {isRecording && (
         <motion.div 
           initial={{ opacity: 0, y: -20 }}
@@ -767,261 +846,10 @@ export default function App() {
       )}
 
       {!isRecording && (
-        <div className="fixed top-8 right-8 z-[40] text-gray-500/80 font-['Long_Cang',cursive] text-2xl drop-shadow-sm pointer-events-none text-right leading-relaxed" style={{ textShadow: '1px 1px 2px rgba(255,255,255,0.8)' }}>
-          Blow the screen<br/>let the memories drift away...
+        <div className="fixed top-8 right-8 z-[40] pointer-events-none">
         </div>
       )}
 
-      <motion.div
-        drag dragMomentum={false}
-        initial={{ x: 0, y: 0 }}
-        className="absolute top-28 right-4 z-50 flex flex-col items-end font-sans pointer-events-auto"
-      >
-        <motion.div 
-          className="flex justify-end mb-2 cursor-grab active:cursor-grabbing"
-          whileHover={{ scale: 1.05 }}
-          whileTap={{ scale: 0.95 }}
-        >
-          <button 
-            onPointerDown={(e) => e.stopPropagation()} 
-            onClick={() => setIsPanelOpen(!isPanelOpen)} 
-            className="p-2 bg-white/90 backdrop-blur shadow-md hover:bg-gray-50 rounded-full text-gray-500 border border-gray-200 focus:outline-none"
-          >
-            {isPanelOpen ? <X className="w-4 h-4"/> : <Settings className="w-4 h-4"/>}
-          </button>
-        </motion.div>
-        
-        <AnimatePresence>
-          {isPanelOpen && (
-            <motion.div
-              initial={{ opacity: 0, scale: 0.9, y: -10 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.9, y: -10 }}
-              transition={{ duration: 0.2 }}
-              onPointerDown={(e) => e.stopPropagation()}
-              className="bg-white/95 backdrop-blur shadow-2xl rounded-xl border border-gray-200 w-72 flex flex-col"
-              style={{ maxHeight: 'calc(100vh - 80px)' }}
-            >
-              <div className="p-4 space-y-4 overflow-y-auto no-scrollbar pointer-events-auto" onPointerDown={(e) => e.stopPropagation()}>
-                
-                <div className="flex space-x-2">
-                  <div className="space-y-1.5 flex-1">
-                    <label className="text-[10px] font-bold text-gray-400 uppercase block">{t.size}</label>
-                    <div className="flex border rounded bg-gray-50 overflow-hidden">
-                      {(['small', 'medium', 'large'] as const).map(s => (
-                        <button key={s} onClick={() => setSize(s)} className={`flex-1 py-1 text-[11px] ${size === s ? 'bg-white shadow-sm text-black border-gray-200 m-0.5 rounded-sm' : 'text-gray-500 hover:bg-gray-100'}`}>
-                          {s === 'small' ? t.size_s : s === 'medium' ? t.size_m : t.size_l}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="space-y-1.5 flex-1">
-                    <label className="text-[10px] font-bold text-gray-400 uppercase block">{t.color}</label>
-                    <div className="flex items-center space-x-2 bg-gray-50 border border-gray-200 p-1 rounded h-[30px]">
-                      <input type="color" value={textColor} onChange={(e) => setTextColor(e.target.value)} className="w-5 h-5 rounded border-0 p-0 cursor-pointer" />
-                      <span className="text-[11px] font-mono text-gray-600 uppercase flex-1 text-center truncate">{textColor}</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase flex justify-between">
-                    <span>{t.speed}</span><span className="text-gray-500">{speed}ms</span>
-                  </label>
-                  <input type="range" min="10" max="400" step="10" value={speed} onChange={(e) => setSpeed(Number(e.target.value))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer" />
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase flex justify-between">
-                    <span>{t.spacing}</span><span className="text-gray-500">{letterSpacing}px</span>
-                  </label>
-                  <input type="range" min="0" max="10" step="1" value={letterSpacing} onChange={(e) => setLetterSpacing(Number(e.target.value))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer" />
-                </div>
-                
-                <div className="space-y-2 pt-2 border-t border-gray-100">
-                  <div className="flex items-center justify-between">
-                    <label className="text-[10px] font-bold text-gray-400 uppercase">{t.shadow}</label>
-                    <button
-                      onClick={() => setIsShadowEnabled(!isShadowEnabled)}
-                      className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors focus:outline-none ${isShadowEnabled ? 'bg-blue-400' : 'bg-gray-200'}`}
-                    >
-                      <span className={`inline-block w-3 h-3 transform bg-white rounded-full transition-transform ${isShadowEnabled ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
-                    </button>
-                  </div>
-                  
-                  {isShadowEnabled && (
-                    <>
-                      <div className="flex space-x-2">
-                        <div className="space-y-1.5 flex-[0.5]">
-                           <label className="text-[9px] text-gray-400 block">{t.shadow_color}</label>
-                           <div className="flex items-center space-x-1 bg-gray-50 border border-gray-200 p-0.5 rounded h-[22px]">
-                             <input type="color" value={shadowColor} onChange={(e) => setShadowColor(e.target.value)} className="w-5 h-5 rounded border-0 p-0 cursor-pointer" />
-                           </div>
-                        </div>
-                        <div className="space-y-1.5 flex-1">
-                           <label className="text-[9px] text-gray-400 flex justify-between">
-                             <span>{t.shadow_blur}</span><span>{shadowBlur}</span>
-                           </label>
-                           <input type="range" min="0" max="30" step="1" value={shadowBlur} onChange={(e) => setShadowBlur(Number(e.target.value))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer" />
-                        </div>
-                      </div>
-                      <div className="flex space-x-2">
-                        <div className="space-y-1.5 flex-1">
-                           <label className="text-[9px] text-gray-400 flex justify-between">
-                             <span>{t.offset_x}</span><span>{shadowOffsetX}</span>
-                           </label>
-                           <input type="range" min="-30" max="30" step="1" value={shadowOffsetX} onChange={(e) => setShadowOffsetX(Number(e.target.value))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer" />
-                        </div>
-                        <div className="space-y-1.5 flex-1">
-                           <label className="text-[9px] text-gray-400 flex justify-between">
-                             <span>{t.offset_y}</span><span>{shadowOffsetY}</span>
-                           </label>
-                           <input type="range" min="-30" max="30" step="1" value={shadowOffsetY} onChange={(e) => setShadowOffsetY(Number(e.target.value))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer" />
-                        </div>
-                      </div>
-                    </>
-                  )}
-                </div>
-
-                <div className="space-y-1.5 pt-2 border-t border-gray-100">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase flex items-center justify-between">
-                    <span>{t.position}</span>
-                    <button onClick={() => { setOffsetX(0); setOffsetY(0); }} className="px-1.5 py-0.5 border border-gray-200 rounded text-[9px] hover:bg-gray-100 text-gray-500">{t.reset}</button>
-                  </label>
-                  <div className="flex space-x-3 mt-1 cursor-auto">
-                    <div className="space-y-1 flex-1">
-                      <div className="flex items-center space-x-1.5 pl-1">
-                        <span className="text-[9px] text-gray-400 w-3">X</span>
-                        <input type="number" value={offsetX} onChange={(e) => setOffsetX(Number(e.target.value) || 0)} className="w-[30px] p-0 border-b border-gray-300 text-center text-[10px] bg-transparent outline-none focus:border-gray-500 font-mono" />
-                      </div>
-                      <input type="range" min="-150" max="150" step="1" value={offsetX} onChange={(e) => setOffsetX(Number(e.target.value))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer" />
-                    </div>
-                    <div className="space-y-1 flex-1">
-                      <div className="flex items-center space-x-1.5 pl-1">
-                        <span className="text-[9px] text-gray-400 w-3">Y</span>
-                        <input type="number" value={offsetY} onChange={(e) => setOffsetY(Number(e.target.value) || 0)} className="w-[30px] p-0 border-b border-gray-300 text-center text-[10px] bg-transparent outline-none focus:border-gray-500 font-mono" />
-                      </div>
-                      <input type="range" min="-150" max="150" step="1" value={offsetY} onChange={(e) => setOffsetY(Number(e.target.value))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer" />
-                    </div>
-                  </div>
-                </div>
-
-                <div className="space-y-1.5 pt-2 border-t border-gray-100">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase flex items-center justify-between">
-                    <span>{t.content}</span><Edit className="w-3 h-3 opacity-60"/>
-                  </label>
-                  <textarea value={text} onChange={(e) => setText(e.target.value)} className="w-full h-24 py-1.5 px-2 border border-gray-200 rounded text-gray-700 bg-gray-50 focus:bg-white focus:ring-1 outline-none font-sans text-[12px] resize-none" />
-                </div>
-                
-                <div className="space-y-2 pt-2 border-t border-gray-100">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase">{t.add_lines}</label>
-                  <div className="flex items-center space-x-2">
-                    <div className="flex items-center space-x-1 border border-gray-200 bg-gray-50 rounded p-1 flex-1">
-                      <span className="text-[9px] text-gray-500 pl-1">{t.lines_count}</span>
-                      <input 
-                        type="number" 
-                        value={linesToAdd} 
-                        onChange={(e) => setLinesToAdd(Math.max(1, parseInt(e.target.value) || 1))} 
-                        className="w-full bg-transparent text-[11px] font-mono text-center outline-none" 
-                      />
-                    </div>
-                    <div className="flex space-x-1">
-                      <button 
-                        onClick={() => { linesConfig.current.addedLines = Math.max(0, linesConfig.current.addedLines - linesToAdd); }} 
-                        className="px-2 py-1.5 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded text-[10px] font-medium transition-colors"
-                      >
-                        {t.reduce}
-                      </button>
-                      <button 
-                        onClick={() => { linesConfig.current.addedLines += linesToAdd; }} 
-                        className="px-2 py-1.5 bg-gray-800 hover:bg-gray-700 text-white rounded text-[10px] font-medium transition-colors"
-                      >
-                        {t.add}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex space-x-2 pt-2 border-t border-gray-100">
-                  <button onClick={saveScene} className="flex-1 py-1.5 border border-gray-200 rounded text-[10px] font-medium hover:bg-gray-50 text-gray-600 transition-colors flex justify-center items-center">
-                    {saveStatus === 'saved' ? <span className="text-green-600">{t.saved}</span> : t.save_scene}
-                  </button>
-                  <button onClick={loadScene} className="flex-1 py-1.5 border border-gray-200 rounded text-[10px] font-medium hover:bg-gray-50 text-gray-600 transition-colors flex justify-center items-center">
-                    {saveStatus === 'loaded' ? <span className="text-green-600">{t.loaded}</span> : saveStatus === 'no_data' ? <span className="text-orange-500">{t.no_data}</span> : t.load_scene}
-                  </button>
-                </div>
-
-                <div className="space-y-2 pt-2 border-t border-gray-100">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase">{t.bg_image}</label>
-                  <div className="flex space-x-2">
-                    <button onClick={() => fileInputRef.current?.click()} className="flex-1 py-1.5 bg-gray-800 hover:bg-gray-700 text-white text-[9px] font-medium rounded shadow-sm transition-colors cursor-pointer">
-                      {t.upload_bg}
-                    </button>
-                    {bgImageSrc && (
-                      <button onClick={() => { setBgImageSrc(null); if (fileInputRef.current) fileInputRef.current.value = ''; }} className="flex-1 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 text-[9px] font-medium rounded transition-colors">
-                        {t.remove_bg}
-                      </button>
-                    )}
-                    <input type="file" accept="image/*" ref={fileInputRef} onChange={handleBgImageUpload} className="hidden" />
-                  </div>
-                </div>
-
-                <div className="space-y-2 pt-2 border-t border-gray-100">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase">{t.export_config}</label>
-                  
-                  <div className="flex items-center space-x-2">
-                    <span className="text-[9px] text-gray-500 w-8">{t.resolution}</span>
-                    <div className="flex border border-gray-200 rounded bg-gray-50 flex-1 overflow-hidden">
-                      {(['720p', '1080p'] as const).map(r => (
-                        <button key={r} onClick={() => setExportRes(r)} className={`flex-1 py-1 text-[9px] font-medium ${exportRes === r ? 'bg-white shadow-sm text-black' : 'text-gray-500 hover:bg-gray-100'}`}>
-                          {r.toUpperCase()}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col space-y-1.5 pt-1">
-                    <span className="text-[9px] text-gray-500">{t.aspect_ratio}</span>
-                    <div className="grid grid-cols-4 gap-1">
-                      {['auto', '16:9', '9:16', '4:3', '3:4', '1:1', 'A4', 'A3'].map(r => (
-                        <button key={r} onClick={() => setAspectRatio(r)} className={`py-1 text-[9px] font-medium rounded border ${aspectRatio === r ? 'bg-gray-800 text-white border-gray-800' : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'}`}>
-                          {r.toUpperCase()}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col space-y-1.5 pt-1">
-                    <span className="text-[9px] text-gray-500">{t.export_image}</span>
-                    <div className="flex items-center space-x-2">
-                      <div className="flex border border-gray-200 rounded bg-gray-50 flex-1 overflow-hidden">
-                        {(['png', 'jpeg'] as const).map(f => (
-                          <button key={f} onClick={() => setImgFormat(f)} className={`flex-1 py-1.5 text-[9px] font-medium ${imgFormat === f ? 'bg-white shadow-sm text-black' : 'text-gray-500 hover:bg-gray-100'}`}>
-                            {f.toUpperCase()}
-                          </button>
-                        ))}
-                      </div>
-                      <button onClick={exportImage} className="flex-1 py-1.5 bg-green-500 hover:bg-green-600 text-white text-[10px] rounded font-medium transition-colors">
-                        {t.save_image}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="space-y-1.5 pt-2 border-t border-gray-100">
-                  <div className="flex items-center justify-between">
-                     <label className="text-[10px] font-bold text-gray-400 uppercase">{t.record_video}</label>
-                  </div>
-                  <button onClick={startRecording} className="w-full py-2 bg-blue-500 hover:bg-blue-600 active:bg-blue-700 text-white rounded-lg text-[11px] font-medium flex items-center justify-center space-x-2 transition-colors">
-                    <span className="w-1.5 h-1.5 rounded-full bg-red-200 animate-pulse"></span>
-                    <span>{t.start_record}</span>
-                  </button>
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </motion.div>
       <canvas ref={canvasRef} className="block" />
       <div className="fixed bottom-4 right-4 z-50 rounded overflow-hidden shadow-sm pointer-events-none opacity-50 outline outline-1 outline-gray-200">
         <video 
