@@ -441,21 +441,25 @@ export default function App() {
   useEffect(() => {
     let active = true;
     const initTask = async () => {
-      const filesetResolver = await FilesetResolver.forVisionTasks(
-        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
-      );
-      const faceLandmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
-        baseOptions: {
-          modelAssetPath: `https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task`,
-          delegate: "GPU"
-        },
-        outputFaceBlendshapes: true,
-        runningMode: "VIDEO",
-        numFaces: 1
-      });
-      if (active) {
-        faceLandmarkerRef.current = faceLandmarker;
-        setIsFaceReady(true);
+      try {
+        const filesetResolver = await FilesetResolver.forVisionTasks(
+          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+        );
+        const faceLandmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
+          baseOptions: {
+            modelAssetPath: `https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task`,
+            delegate: "GPU"
+          },
+          outputFaceBlendshapes: true,
+          runningMode: "VIDEO",
+          numFaces: 1
+        });
+        if (active) {
+          faceLandmarkerRef.current = faceLandmarker;
+          setIsFaceReady(true);
+        }
+      } catch (e) {
+        console.warn("FaceLandmarker initialization failed:", e);
       }
     };
     initTask();
@@ -470,6 +474,8 @@ export default function App() {
         } else {
           stream.getTracks().forEach(track => track.stop());
         }
+      }).catch(err => {
+        console.warn("Camera permission denied or not available:", err);
       });
     }
     
