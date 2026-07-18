@@ -803,24 +803,31 @@ export default function App() {
           <motion.div 
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
-            className="bg-white/50 backdrop-blur-xl border border-white/60 shadow-[0_8px_32px_rgba(0,0,0,0.05)] rounded-2xl p-10 max-w-md w-full text-center"
+            className="p-10 max-w-md w-full flex flex-col items-center justify-between text-center relative"
+            style={{ 
+              backgroundImage: 'url("https://raw.githubusercontent.com/shiy92928-sketch/picture/main/1006163e-72df-4875-aea2-a2ae625c73a2.png")',
+              backgroundSize: '146.9% 121.14%',
+              backgroundPosition: '46.66% 59.52%',
+              backgroundRepeat: 'no-repeat',
+              aspectRatio: '1723/1367'
+            }}
           >
-            <h1 className="text-3xl font-['Long_Cang',cursive] text-gray-800 mb-8">Memory Letter</h1>
+            <h1 className="text-4xl font-['Pixelify_Sans',sans-serif] text-gray-800 mb-2 mt-4 tracking-wider">Memory Letter</h1>
             
-            <div className="space-y-6 text-gray-700 text-sm mb-10 font-sans">
+            <div className="space-y-4 text-gray-700 text-base mb-4 font-['Pixelify_Sans',sans-serif]">
               <div>
-                <div className="text-lg font-medium mb-1">🌬 Blow gently toward the screen</div>
+                <div className="text-lg mb-1">🌬 Blow gently toward the screen</div>
                 <div className="text-gray-500">Let the memories drift away.</div>
               </div>
               <div>
-                <div className="text-lg font-medium mb-1">📝 Watch the words disappear slowly,</div>
+                <div className="text-lg mb-1">📝 Watch the words disappear slowly,</div>
                 <div className="text-gray-500">like a letter carried by the wind.</div>
               </div>
             </div>
             
             <button 
               onClick={() => setIsExperienceStarted(true)}
-              className="px-8 py-3 bg-gray-900 text-white rounded-full text-sm font-medium tracking-wide hover:bg-gray-800 transition-colors shadow-lg flex flex-col items-center justify-center mx-auto"
+              className="px-8 py-3 bg-gray-900 text-white rounded-full text-sm font-['Pixelify_Sans',sans-serif] tracking-wider hover:bg-gray-800 transition-colors shadow-lg flex flex-col items-center justify-center mx-auto mb-4"
             >
               <span>Start Experience</span>
             </button>
