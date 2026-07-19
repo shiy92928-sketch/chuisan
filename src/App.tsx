@@ -193,13 +193,15 @@ class Letter {
     ctx.restore();
   }
 
-  update(currentTime: number, width: number, height: number, blowTriggerTime: number | null, appState: string) {
-    if (appState === 'BLOWING' && blowTriggerTime !== null && currentTime - blowTriggerTime > this.dt) {
-      this.a = Math.max(0, this.a - this.aSpeed);
-      this.x += this.dx;
-      this.y += this.dy;
-      if (this.x < 0 || this.x > width) this.dx *= -1;
-      if (this.y < 0 || this.y > height) this.dy *= -1;
+  update(accumulatedBlowingTime: number, width: number, height: number, appState: string, isBlowingNow: boolean) {
+    if (appState === 'BLOWING') {
+      if (accumulatedBlowingTime > this.dt && isBlowingNow) {
+        this.a = Math.max(0, this.a - this.aSpeed);
+        this.x += this.dx;
+        this.y += this.dy;
+        if (this.x < 0 || this.x > width) this.dx *= -1;
+        if (this.y < 0 || this.y > height) this.dy *= -1;
+      }
     } else if (appState === 'RETURNING') {
       this.x += (this.startX - this.x) * 0.02;
       this.y += (this.startY - this.y) * 0.02;
@@ -636,6 +638,10 @@ export default function App() {
     let blowTriggerTime: number | null = null;
     let allDisappearedTime = 0;
     let cooldownUntil = 0;
+    
+    let isBlowingNow = false;
+    let accumulatedBlowingTime = 0;
+    let lastRenderTime = performance.now();
 
     const handleResize = () => {
       if (isRecordingRef.current) return;
@@ -711,6 +717,10 @@ export default function App() {
 
     let restartTimer = 0;
     const render = (time: number) => {
+      let dtMs = time - lastRenderTime;
+      if (dtMs > 100) dtMs = 16;
+      lastRenderTime = time;
+
       if (linesConfig.current.addedLines !== linesConfig.current.lastAddedLines) {
         linesConfig.current.lastAddedLines = linesConfig.current.addedLines;
         calculateSizes();
@@ -731,26 +741,40 @@ export default function App() {
               const puckerScore = pucker ? pucker.score : 0;
               const funnelScore = funnel ? funnel.score : 0;
               
+              if (puckerScore > 0.45 || funnelScore > 0.45) {
+                isBlowingNow = true;
+              } else {
+                isBlowingNow = false;
+              }
+              
               if (isExperienceStartedRef.current && appState === 'WAITING' && time > cooldownUntil) {
-                if (puckerScore > 0.45 || funnelScore > 0.45) {
+                if (isBlowingNow) {
                   blowFrames++;
                   if (blowFrames > 10) {
                     appState = 'BLOWING';
                     blowTriggerTime = time;
+                    accumulatedBlowingTime = 0;
                     blowFrames = 0;
                   }
                 } else {
                   blowFrames = 0;
                 }
-              } else {
-                blowFrames = 0;
               }
             } else {
+              isBlowingNow = false;
               blowFrames = 0;
             }
           } catch (e) {
             console.error("MediaPipe inference error", e);
           }
+        }
+      } else {
+        isBlowingNow = false;
+      }
+
+      if (appState === 'BLOWING') {
+        if (isBlowingNow) {
+          accumulatedBlowingTime += dtMs;
         }
       }
 
@@ -774,7 +798,7 @@ export default function App() {
           offsetX, 
           offsetY
         );
-        letters[i].update(time, logicalWidth, logicalHeight, blowTriggerTime, appState);
+        letters[i].update(accumulatedBlowingTime, logicalWidth, logicalHeight, appState, isBlowingNow);
         if (letters[i].a > 0) allDisappeared = false;
         if (letters[i].a < 255 || Math.abs(letters[i].x - letters[i].startX) > 1 || Math.abs(letters[i].y - letters[i].startY) > 1) {
           allReturned = false;
@@ -786,6 +810,7 @@ export default function App() {
         else if (time - allDisappearedTime > 2000) {
           appState = 'RETURNING';
           allDisappearedTime = 0;
+          accumulatedBlowingTime = 0;
         }
       }
 
